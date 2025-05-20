@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -776,7 +777,7 @@ func TestCluster_RouteManagerDisabled(t *testing.T) {
 	}
 
 	oldRoutes := cluster.getAllRoutes()
-	route, _ := clientBuilder.newClient(net.IP{}, 8111, connConfig{}, "dummy", nil, 10, nil, nil)
+	route, _ := clientBuilder.newClient(net.IP{}, 8111, connConfig{}, "dummy", nil, 10, nil, nil, nil)
 	cluster.addRoute("dummy", route)
 	newRoutes := cluster.getAllRoutes()
 
@@ -798,7 +799,7 @@ func TestCluster_RouteManagerEnabled(t *testing.T) {
 		t.Errorf("Route manager should be enabled!")
 	}
 	oldRoutes := cluster.getAllRoutes()
-	route, _ := clientBuilder.newClient(net.IP{}, 8111, connConfig{}, "dummy", nil, 10, nil, nil)
+	route, _ := clientBuilder.newClient(net.IP{}, 8111, connConfig{}, "dummy", nil, 10, nil, nil, nil)
 	cluster.addRoute("dummy", route)
 	newRoutes := cluster.getAllRoutes()
 
@@ -949,6 +950,7 @@ func TestCluster_customDialer(t *testing.T) {
 		HostPorts:                    []string{"localhost:9121"},
 		logger:                       &logging.Nop{},
 		IdleConnectionReapDelay:      30 * time.Second,
+		MeterProvider:                &metrics.NopMeterProvider{},
 	}
 	cc, err := New(cfg)
 	require.NoError(t, err)
@@ -974,7 +976,7 @@ type testClientBuilder struct {
 
 var _ clientBuilder = (*testClientBuilder)(nil)
 
-func (b *testClientBuilder) newClient(ip net.IP, port int, _ connConfig, _ string, _ aws.CredentialsProvider, _ int, _ dialContext, _ RouteListener) (DaxAPI, error) {
+func (b *testClientBuilder) newClient(ip net.IP, port int, _ connConfig, _ string, _ aws.CredentialsProvider, _ int, _ dialContext, _ RouteListener, _ *daxSdkMetrics) (DaxAPI, error) {
 	t := &testClient{ep: b.ep, hp: hostPort{ip.String(), port}}
 	b.clients = append(b.clients, []*testClient{t}...)
 	return t, nil
