@@ -16,12 +16,14 @@
 package client
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"time"
 
 	"github.com/aws/aws-dax-go-v2/dax/utils"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 )
 
 const failOpenThreshold = 3
@@ -35,9 +37,16 @@ type routeManager struct {
 	timer                  *time.Timer
 	logger                 logging.Logger
 	logLevel               utils.LogLevelType
+	meterProvider          metrics.MeterProvider
 }
 
-func newRouteManager(isEnabled bool, healthCheckDuration time.Duration, logger logging.Logger, logLevel utils.LogLevelType) *routeManager {
+func newRouteManager(
+	isEnabled bool,
+	healthCheckDuration time.Duration,
+	logger logging.Logger,
+	logLevel utils.LogLevelType,
+	meterProvider metrics.MeterProvider,
+) *routeManager {
 	return &routeManager{
 		routes:                 make([]DaxAPI, 0),
 		isEnabled:              isEnabled,
@@ -46,6 +55,7 @@ func newRouteManager(isEnabled bool, healthCheckDuration time.Duration, logger l
 		disableDuration:        10 * time.Minute, // Disable route manager after multiple fail open in a row
 		logger:                 logger,
 		logLevel:               logLevel,
+		meterProvider:          meterProvider,
 	}
 }
 
@@ -86,6 +96,9 @@ func (r *routeManager) addRoute(endpoint string, route DaxAPI) {
 		}
 	}
 	r.routes = append(r.routes, route)
+
+	_ = countMetricInt64(context.Background(), r.meterProvider, daxRouteManagerRoutesAdded, 1)
+
 	r.debugLog("Added route: %s to active routes", endpoint)
 }
 
@@ -98,15 +111,21 @@ func (r *routeManager) removeRoute(endpoint string, route DaxAPI, allClients map
 	if float32(len(r.routes)-1) < 2*float32(len(allClients))/3 {
 		r.debugLog("FailOpen: Added all routes back to active routes")
 		curTime := time.Now()
+
 		// Fail Open to all routes.
 		r.rebuildRoutes(allClients)
 		r.verifyAndDisable(curTime)
+
 		return
 	}
+
 	for i, activeRoute := range r.routes {
 		if activeRoute == route {
 			r.routes = append(r.routes[:i], r.routes[i+1:]...)
 			r.debugLog("Removed route: %s from active routes", endpoint)
+
+			_ = countMetricInt64(context.Background(), r.meterProvider, daxRouteManagerRoutesRemoved, 1)
+
 			return
 		}
 	}
@@ -121,14 +140,25 @@ func (r *routeManager) verifyAndDisable(failOpenTime time.Time) {
 			newFailOpenList = append(newFailOpenList, t)
 		}
 	}
+
 	newFailOpenList = append(newFailOpenList, failOpenTime)
 	r.failOpenTimeList = newFailOpenList
 	if len(r.failOpenTimeList) < failOpenThreshold {
 		return
 	}
+
 	r.stopTimer()
+
+	_ = gaugeInt64(context.Background(), r.meterProvider, daxRouteManagerDisabledState, 0)
 	r.isEnabled = false
-	r.timer = time.AfterFunc(r.disableDuration, func() { r.isEnabled = true })
+
+	r.timer = time.AfterFunc(r.disableDuration, func() {
+		r.isEnabled = true
+
+		_ = gaugeInt64(context.Background(), r.meterProvider, daxRouteManagerDisabledState, 1)
+	})
+
+	_ = countMetricInt64(context.Background(), r.meterProvider, daxRouteManagerFailOpenEvents, 1)
 }
 
 func (r *routeManager) rebuildRoutes(allClients map[hostPort]clientAndConfig) {

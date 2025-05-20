@@ -116,6 +116,11 @@ func (p *tubePool) get() (tube, error) {
 // Gets a new or reuses existing tube with provided context.
 // Create a new tube even if pool reached maxConcurrentConnAttempts if highPriority is true.
 func (p *tubePool) getWithContext(ctx context.Context, highPriority bool, opt RequestOptions) (tube, error) {
+	_ = gaugeInt64(ctx, p.connConfig.meterProvider, daxConnectionsPendingAcquire, 1)
+	defer func() {
+		_ = gaugeInt64(ctx, p.connConfig.meterProvider, daxConnectionsPendingAcquire, 0)
+	}()
+
 	for {
 		p.mutex.Lock()
 		if p.closed {
@@ -218,6 +223,9 @@ func (p *tubePool) put(t tube) {
 	if p.closed || t.Session() != p.session {
 		t.Close()
 		// Waiters channel was already closed in Close
+
+		_ = countMetricInt64(context.Background(), p.connConfig.meterProvider, daxConnectionsClosedSession, 1)
+
 		return
 	}
 
@@ -233,6 +241,8 @@ func (p *tubePool) put(t tube) {
 
 	t.SetNext(p.top)
 	p.top = t
+
+	_ = gaugeInt64(context.Background(), p.connConfig.meterProvider, daxConnectionsIdle, countNodes(p.top))
 }
 
 // Make sure to closeTube the tube if you are not sure that the tube is clean
@@ -242,6 +252,9 @@ func (p *tubePool) closeTube(t tube) {
 	if t == nil {
 		return
 	}
+
+	_ = countMetricInt64(context.Background(), p.connConfig.meterProvider, daxConnectionsClosedError, 1)
+
 	if p.closeTubeImmediately {
 		t.Close()
 	} else {
@@ -304,6 +317,12 @@ func (p *tubePool) reapIdleConnections() {
 		if p.lastActive != nil {
 			reapHead = p.lastActive.Next()
 			p.lastActive.SetNext(nil)
+
+			c := countNodes(reapHead)
+
+			if c > 0 {
+				_ = countMetricInt64(context.Background(), p.connConfig.meterProvider, daxConnectionsClosedIdle, c)
+			}
 		}
 		p.lastActive = p.top
 	}
@@ -325,6 +344,9 @@ func (p *tubePool) alloc(session int64, opt RequestOptions) (tube, error) {
 		p.debugLog(opt, "Error in allocating new tube for %s : %s", conn.RemoteAddr(), err)
 		return nil, err
 	}
+
+	_ = countMetricInt64(context.Background(), p.connConfig.meterProvider, daxConnectionsCreated, 1)
+
 	return t, nil
 }
 
@@ -351,6 +373,14 @@ func (p *tubePool) debugLog(opt RequestOptions, logString string, args ...interf
 	if opt.Logger != nil && opt.LogLevel.AtLeast(utils.LogDebug) {
 		opt.Logger.Logf(logging.Debug, logString, args...)
 	}
+}
+
+func countNodes(top tube) (c int64) {
+	for node := top; node != nil; node = node.Next() {
+		c++
+	}
+
+	return
 }
 
 // Represents a semaphore limiting the total number of in-flight connection attempts.

@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-dax-go-v2/dax/internal/cbor"
@@ -29,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 )
 
 const (
@@ -76,6 +78,8 @@ type SingleDaxClient struct {
 	attrListIdToNames *lru.Lru
 
 	healthStatus HealthStatus
+
+	meterProvider metrics.MeterProvider
 }
 
 func NewSingleClient(endpoint string, connConfigData connConfig, region string, credentials aws.CredentialsProvider, routeListener RouteListener) (*SingleDaxClient, error) {
@@ -88,6 +92,10 @@ func newSingleClientWithOptions(endpoint string, connConfigData connConfig, regi
 		po.maxConcurrentConnAttempts = maxPendingConnections
 	}
 
+	if connConfigData.meterProvider == nil {
+		connConfigData.meterProvider = &metrics.NopMeterProvider{}
+	}
+
 	po.dialContext = dialContextFn
 
 	client := &SingleDaxClient{
@@ -96,7 +104,8 @@ func newSingleClientWithOptions(endpoint string, connConfigData connConfig, regi
 		tubeAuthWindowSecs: authTtlSecs * tubeAuthWindowScalar,
 		pool:               newTubePoolWithOptions(endpoint, po, connConfigData),
 		executor:           newExecutor(),
-		healthStatus:       newHealthStatus(endpoint, routeListener),
+		healthStatus:       newHealthStatus(endpoint, routeListener, connConfigData.meterProvider),
+		meterProvider:      connConfigData.meterProvider,
 	}
 
 	client.keySchema = &lru.Lru{
@@ -264,6 +273,7 @@ func (client *SingleDaxClient) PutItemWithOptions(ctx context.Context, input *dy
 		output, err = decodePutItemOutput(ctx, reader, input, client.keySchema, client.attrListIdToNames, output)
 		return err
 	}
+
 	if err = client.executeWithRetries(ctx, OpPutItem, opt, encoder, decoder); err != nil {
 		return output, err
 	}
@@ -442,7 +452,6 @@ func (client *SingleDaxClient) newContext(ctx context.Context, o RequestOptions)
 }
 
 func (client *SingleDaxClient) executeWithRetries(ctx context.Context, op string, o RequestOptions, encoder func(writer *cbor.Writer) error, decoder func(reader *cbor.Reader) error) error {
-
 	ctx = client.newContext(ctx, o)
 
 	var err error
@@ -502,6 +511,8 @@ func (client *SingleDaxClient) executeWithContext(ctx context.Context, op string
 		return err
 	}
 
+	startTime := time.Now()
+
 	writer := t.CborWriter()
 	if err = encoder(writer); err != nil {
 		// Validation errors will cause connection to be closed as there is no guarantee
@@ -509,13 +520,22 @@ func (client *SingleDaxClient) executeWithContext(ctx context.Context, op string
 		client.pool.closeTube(t)
 		return err
 	}
+
+	// actual request is sent here
 	if err := writer.Flush(); err != nil {
+		_ = countMetricInt64(ctx, client.meterProvider, fmt.Sprintf(daxOpNameFailure, op), 1)
+
 		client.pool.closeTube(t)
 		return err
 	}
 
+	_ = countMetricInt64(ctx, client.meterProvider, fmt.Sprintf(daxOpNameSuccess, op), 1)
+
 	reader := t.CborReader()
 	ex, err := decodeError(reader)
+
+	_ = histogramMicrosecondsInt64(ctx, client.meterProvider, fmt.Sprintf(daxOpNameLatencyUs, op), startTime)
+
 	if err != nil { // decode or network error - doesn't guarantee completely drained tube
 		client.pool.closeTube(t)
 		return err
@@ -568,22 +588,30 @@ func (client *SingleDaxClient) recycleTube(t tube, err error) {
 }
 func (client *SingleDaxClient) auth(ctx context.Context, t tube) error {
 	// TODO credentials.Get() cause a throughput drop of ~25 with 250 goroutines with DefaultCredentialChain (only instance profile credentials available)
+
+	// authentication provides do not offer the option to pass metrics to them
 	creds, err := client.credentials.Retrieve(ctx)
+
 	if err != nil {
 		return err
 	}
+
 	now := time.Now().UTC()
 	if t.CompareAndSwapAuthID(creds.AccessKeyID) || t.AuthExpiryUnix() <= now.Unix() {
 		stringToSign, signature := generateSigV4WithTime(creds, daxAddress, client.region, "", now)
 		writer := t.CborWriter()
+
 		if err := encodeAuthInput(creds.AccessKeyID, creds.SessionToken, stringToSign, signature, userAgent, writer); err != nil {
 			return err
 		}
+
 		if err := writer.Flush(); err != nil {
 			return err
 		}
+
 		t.SetAuthExpiryUnix(now.Unix() + client.tubeAuthWindowSecs)
 	}
+
 	return nil
 }
 

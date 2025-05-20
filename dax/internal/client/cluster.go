@@ -35,6 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 )
 
 type serviceEndpoint struct {
@@ -73,6 +74,8 @@ type Config struct {
 	logger                   logging.Logger
 	logLevel                 utils.LogLevelType
 
+	MeterProvider metrics.MeterProvider
+
 	RouteManagerEnabled bool // this flag temporarily removes routes facing network errors.
 }
 
@@ -80,21 +83,27 @@ type connConfig struct {
 	isEncrypted              bool
 	hostname                 string
 	skipHostnameVerification bool
+
+	meterProvider metrics.MeterProvider
 }
 
 func (cfg *Config) validate() error {
 	if cfg.HostPorts == nil || len(cfg.HostPorts) == 0 {
 		return smithy.NewErrParamRequired("Endpoint")
 	}
+
 	if len(cfg.Region) == 0 {
 		return smithy.NewErrParamRequired("config.Region")
 	}
+
 	if cfg.Credentials == nil {
 		return smithy.NewErrParamRequired("config.Credentials")
 	}
+
 	if cfg.MaxPendingConnectionsPerHost < 0 {
 		return NewCustomInvalidParamError("ConfigValidation", "MaxPendingConnectionsPerHost cannot be negative")
 	}
+
 	return nil
 }
 
@@ -126,8 +135,12 @@ func DefaultConfig() Config {
 		logger:                   utils.NewDefaultLogger(),
 		logLevel:                 utils.LogOff,
 		IdleConnectionReapDelay:  30 * time.Second,
-		RouteManagerEnabled:      false,
+
+		MeterProvider: &metrics.NopMeterProvider{},
+
+		RouteManagerEnabled: false,
 	}
+
 	if cfg.Credentials == nil {
 		conf, err := config.LoadDefaultConfig(context.Background())
 		if err != nil {
@@ -135,6 +148,7 @@ func DefaultConfig() Config {
 		}
 		cfg.Credentials = conf.Credentials
 	}
+
 	return cfg
 }
 
@@ -380,16 +394,34 @@ func newCluster(cfg Config) (*cluster, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+
 	seeds, hostname, isEncrypted, err := getHostPorts(cfg.HostPorts)
 	if err != nil {
 		return nil, err
 	}
+
 	cfg.connConfig.isEncrypted = isEncrypted
 	cfg.connConfig.skipHostnameVerification = cfg.SkipHostnameVerification
 	cfg.connConfig.hostname = hostname
+	cfg.connConfig.meterProvider = cfg.MeterProvider
+
 	cfg.validateConnConfig()
-	routeManager := newRouteManager(cfg.RouteManagerEnabled, cfg.ClientHealthCheckInterval, cfg.logger, cfg.logLevel)
-	return &cluster{seeds: seeds, config: cfg, executor: newExecutor(), clientBuilder: &singleClientBuilder{}, routeManager: routeManager}, nil
+
+	routeManager := newRouteManager(
+		cfg.RouteManagerEnabled,
+		cfg.ClientHealthCheckInterval,
+		cfg.logger,
+		cfg.logLevel,
+		cfg.MeterProvider,
+	)
+
+	return &cluster{
+		seeds:         seeds,
+		config:        cfg,
+		executor:      newExecutor(),
+		clientBuilder: &singleClientBuilder{},
+		routeManager:  routeManager,
+	}, nil
 }
 
 func getHostPorts(hosts []string) (hostPorts []hostPort, hostname string, isEncrypted bool, err error) {

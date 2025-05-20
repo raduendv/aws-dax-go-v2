@@ -17,9 +17,11 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/aws/smithy-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -42,7 +44,7 @@ func (mrl *mockRouteListener) isRouteManagerEnabled() bool {
 }
 
 func Test_nilRouteListener(t *testing.T) {
-	hs := newHealthStatus("dummy", nil)
+	hs := newHealthStatus("dummy", nil, nil)
 	_, ok := hs.(*disabledHealthStatus)
 	if !ok {
 		t.Errorf("disabledHealthStatus not initialized with empty routeListener")
@@ -51,7 +53,7 @@ func Test_nilRouteListener(t *testing.T) {
 
 func Test_onErrorInReadRequest_differentError(t *testing.T) {
 	mrl := &mockRouteListener{}
-	hs := newHealthStatus("dummy", mrl)
+	hs := newHealthStatus("dummy", mrl, nil)
 	ehs, ok := hs.(*enabledHealthStatus)
 	if !ok {
 		t.Errorf("enabledHealthStatus not initialized with empty routeListener")
@@ -79,8 +81,9 @@ func Test_onErrorInReadRequest_differentError(t *testing.T) {
 
 func Test_onErrorInReadRequest_removeRouteCall(t *testing.T) {
 	mrl := &mockRouteListener{}
+	tmp := &testMeterProvider{}
 	mrl.On("removeRoute").Return(nil).Times(1)
-	hs := newHealthStatus("dummy", mrl)
+	hs := newHealthStatus("dummy", mrl, tmp)
 	ehs, _ := hs.(*enabledHealthStatus)
 	for i := 1; i <= timeoutErrorThreshold; i++ {
 		hs.onErrorInReadRequest(context.DeadlineExceeded, nil)
@@ -95,13 +98,26 @@ func Test_onErrorInReadRequest_removeRouteCall(t *testing.T) {
 				t.Errorf("isHealthy should be false")
 			}
 		}
+	}
 
+	assert.Len(t, tmp.meters, 1)
+	_, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	if !ok {
+		return
+	}
+
+	hcs, ok := tmp.meters[daxMeterScope].(*testMeter).i64s[daxHealthCheckFailure]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxHealthCheckFailure))
+	if ok {
+		assert.Len(t, hcs.data, 1)
 	}
 }
 
 func Test_onSuccessInReadRequest(t *testing.T) {
 	mrl := &mockRouteListener{}
-	hs := newHealthStatus("dummy", mrl)
+	tmp := &testMeterProvider{}
+	hs := newHealthStatus("dummy", mrl, tmp)
 	ehs, _ := hs.(*enabledHealthStatus)
 	ehs.curReadTimeoutCount = 5
 	hs.onSuccessInReadRequest()
@@ -119,8 +135,9 @@ func Test_onSuccessInReadRequest(t *testing.T) {
 
 func Test_onHealthCheckSuccess(t *testing.T) {
 	mrl := &mockRouteListener{}
+	tmp := &testMeterProvider{}
 	mrl.On("addRoute").Return(nil).Times(1)
-	hs := newHealthStatus("dummy", mrl)
+	hs := newHealthStatus("dummy", mrl, tmp)
 	ehs, _ := hs.(*enabledHealthStatus)
 	ehs.isHealthy = false
 	ehs.curReadTimeoutCount = 5
@@ -133,4 +150,17 @@ func Test_onHealthCheckSuccess(t *testing.T) {
 		t.Errorf("onHealthCheckSuccess failed to set curReadTimeoutCount to 0")
 	}
 	mrl.AssertCalled(t, "addRoute")
+
+	assert.Len(t, tmp.meters, 1)
+	_, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	if !ok {
+		return
+	}
+
+	hcs, ok := tmp.meters[daxMeterScope].(*testMeter).i64s[daxHealthCheckSuccess]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxHealthCheckSuccess))
+	if ok {
+		assert.Len(t, hcs.data, 1)
+	}
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+	"github.com/aws/smithy-go/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -949,6 +950,7 @@ func TestCluster_customDialer(t *testing.T) {
 		HostPorts:                    []string{"localhost:9121"},
 		logger:                       &logging.Nop{},
 		IdleConnectionReapDelay:      30 * time.Second,
+		MeterProvider:                &metrics.NopMeterProvider{},
 	}
 	cc, err := New(cfg)
 	require.NoError(t, err)

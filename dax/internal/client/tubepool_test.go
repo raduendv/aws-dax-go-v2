@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-dax-go-v2/dax/internal/cbor"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -95,6 +96,8 @@ func TestTubePoolConnectionCache(t *testing.T) {
 	}
 	defer listener.Close()
 
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{10, time.Second * 1, defaultDialer.DialContext}, connConfigData)
 
 	// verify tube is re-used
@@ -174,6 +177,32 @@ func TestTubePoolConnectionCache(t *testing.T) {
 			t.Errorf("expected most recent tube")
 		}
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 18,
+		daxConnectionsCreated:        3,
+		daxConnectionsIdle:           6,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestTubePool_reapIdleTubes(t *testing.T) {
@@ -186,6 +215,8 @@ func TestTubePool_reapIdleTubes(t *testing.T) {
 	}
 	defer listener.Close()
 
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	pool := newTubePool(endpoint, connConfigData)
 
 	tubeCount := 10
@@ -243,6 +274,33 @@ func TestTubePool_reapIdleTubes(t *testing.T) {
 	if countTubes(pool) != count+1 {
 		t.Errorf("expected cached tube count %v, actual %v", count+1, countTubes(pool))
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 30,
+		daxConnectionsCreated:        10,
+		daxConnectionsIdle:           15,
+		daxConnectionsClosedIdle:     2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestTubePool_Close(t *testing.T) {
@@ -255,6 +313,8 @@ func TestTubePool_Close(t *testing.T) {
 	}
 	defer listener.Close()
 
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{1, time.Second * 1, defaultDialer.DialContext}, connConfigData)
 	tubes := make([]tube, 2)
 	for i := 0; i < 2; i++ {
@@ -297,20 +357,79 @@ func TestTubePool_Close(t *testing.T) {
 	if tubeCount := countTubes(pool); tubeCount != 0 {
 		t.Fatalf("Tube returned to a closed pool changed its size. Pool size: %d", tubeCount)
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 4,
+		daxConnectionsCreated:        2,
+		daxConnectionsIdle:           1,
+		daxConnectionsClosedSession:  1,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestTubePoolError(t *testing.T) {
 	endpoint := ":8184"
+
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
+
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{10, time.Second * 1, defaultDialer.DialContext}, connConfigData)
 	_, err := pool.get()
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("expected 'dial tcp :8184: connection refused', actual '%v'\n", err)
+	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
 	}
 }
 
 func TestTubePoolErrorWithCustomDialContext(t *testing.T) {
 	endpoint := ":8185"
 	var numDials int64
+
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
+
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{10, time.Second * 1, func(ctx context.Context, network, address string) (net.Conn, error) {
 		atomic.AddInt64(&numDials, 1)
 		var d net.Dialer
@@ -324,6 +443,30 @@ func TestTubePoolErrorWithCustomDialContext(t *testing.T) {
 	nDials := atomic.LoadInt64(&numDials)
 	if nDials == 0 {
 		t.Error("expected custom dialer to be called, got 0 calls")
+	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
 	}
 }
 
@@ -345,6 +488,8 @@ func TestConnectionPriority(t *testing.T) {
 		return d.DialContext(ctx, network, address)
 	}
 
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{maxAttempts, 1 * time.Second, defaultDialer.DialContext}, connConfigData)
 	pool.dialContext = connectFn
 	defer pool.Close()
@@ -381,6 +526,30 @@ func TestConnectionPriority(t *testing.T) {
 	}
 
 	wg.Wait()
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := []string{
+		daxConnectionsPendingAcquire,
+		daxConnectionsCreated,
+	}
+
+	for _, k := range keys {
+		_, ok = tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+	}
 }
 
 func TestGetWithClosedErrorChannel(t *testing.T) {
@@ -393,6 +562,9 @@ func TestGetWithClosedErrorChannel(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	pool := newTubePoolWithOptions(endpoint, tubePoolOptions{1, 10 * time.Second, defaultDialer.DialContext}, connConfigData)
 	pool.dialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		wg.Done()
@@ -414,6 +586,30 @@ func TestGetWithClosedErrorChannel(t *testing.T) {
 
 	if err != os.ErrClosed {
 		t.Fatalf("Expected os.ErrClosed error but got %v", err)
+	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
 	}
 }
 
@@ -510,6 +706,8 @@ func countTubes(pool *tubePool) int {
 }
 
 func TestTubePool_close(t *testing.T) {
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	p := newTubePoolWithOptions(":1234", tubePoolOptions{1, 5 * time.Second, defaultDialer.DialContext}, connConfigData)
 	origSession := p.session
 	p.closeTubeImmediately = true
@@ -519,9 +717,35 @@ func TestTubePool_close(t *testing.T) {
 	p.closeTube(tt)
 	require.Equal(t, origSession, p.session)
 	tt.AssertCalled(t, "Close")
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedError: 1,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestTubePool_PutClosesTubesIfPoolIsClosed(t *testing.T) {
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	p := newTubePoolWithOptions(":1234", tubePoolOptions{1, 5 * time.Second, defaultDialer.DialContext}, connConfigData)
 	p.closed = true
 
@@ -532,9 +756,35 @@ func TestTubePool_PutClosesTubesIfPoolIsClosed(t *testing.T) {
 	p.put(tt)
 
 	tt.AssertExpectations(t)
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedSession: 1,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestTubePool_PutClosesTubesFromDifferentSession(t *testing.T) {
+	tmp := &testMeterProvider{}
+	connConfigData.meterProvider = tmp
 	p := newTubePoolWithOptions(":1234", tubePoolOptions{1, 5 * time.Second, defaultDialer.DialContext}, connConfigData)
 
 	tt := &mockTube{}
@@ -544,4 +794,65 @@ func TestTubePool_PutClosesTubesFromDifferentSession(t *testing.T) {
 	p.put(tt)
 
 	tt.AssertExpectations(t)
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedSession: 1,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
+}
+
+func TestCountNodes(t *testing.T) {
+	cases := []struct {
+		input    tube
+		expected int64
+	}{
+		{
+			input:    nil,
+			expected: 0,
+		},
+		{
+			input:    &netConnTube{},
+			expected: 1,
+		},
+		{
+			// testify mock doesn't support returning something a number of times then a nil
+			input: &netConnTube{
+				next: &netConnTube{
+					next: &netConnTube{
+						next: &netConnTube{
+							next: &netConnTube{},
+						},
+					},
+				},
+			},
+			expected: 5,
+		},
+	}
+
+	for i, c := range cases {
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			a := countNodes(c.input)
+
+			assert.Equal(t, c.expected, a)
+		})
+	}
 }

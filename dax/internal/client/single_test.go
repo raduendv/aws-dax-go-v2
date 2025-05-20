@@ -95,6 +95,9 @@ func TestExecuteErrorHandling(t *testing.T) {
 		},
 	}
 
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	for i, c := range cases {
 		cli, err := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 			return c.conn, nil
@@ -113,9 +116,41 @@ func TestExecuteErrorHandling(t *testing.T) {
 		}
 		cli.Close()
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsCreated:                      6,
+		daxConnectionsClosedError:                  4,
+		daxConnectionsIdle:                         2,
+		daxConnectionsPendingAcquire:               14,
+		fmt.Sprintf(daxOpNameSuccess, OpGetItem):   5,
+		fmt.Sprintf(daxOpNameLatencyUs, OpGetItem): 5,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestRetryPropogatesContextError(t *testing.T) {
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, clientErr := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 		return &mockConn{rd: []byte{cbor.Array + 0}}, nil
 	}, nil)
@@ -147,9 +182,36 @@ func TestRetryPropogatesContextError(t *testing.T) {
 	if cancelErr.Err != context.Canceled {
 		t.Errorf("aws error doesn't match expected. %v", cancelErr)
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsPendingAcquire: 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestRetryPropogatesOtherErrors(t *testing.T) {
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, clientErr := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 		return &mockConn{rd: []byte{cbor.Array + 0}}, nil
 	}, nil)
@@ -204,9 +266,40 @@ func TestRetryPropogatesOtherErrors(t *testing.T) {
 	if daxErr.StatusCode() != 400 {
 		t.Errorf("Expected status code 400, got %d", daxErr.StatusCode())
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedError:                  2,
+		daxConnectionsCreated:                      2,
+		daxConnectionsPendingAcquire:               4,
+		fmt.Sprintf(daxOpNameSuccess, OpGetItem):   2,
+		fmt.Sprintf(daxOpNameLatencyUs, OpGetItem): 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestRetryPropogatesOtherErrorsWithDelay(t *testing.T) {
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, clientErr := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 		return &mockConn{rd: []byte{cbor.Array + 0}}, nil
 	}, nil)
@@ -256,9 +349,40 @@ func TestRetryPropogatesOtherErrorsWithDelay(t *testing.T) {
 	if !daxErr.recoverable() {
 		t.Error("Expected error to be recoverable")
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedError:                  2,
+		daxConnectionsCreated:                      2,
+		daxConnectionsPendingAcquire:               4,
+		fmt.Sprintf(daxOpNameSuccess, OpGetItem):   2,
+		fmt.Sprintf(daxOpNameLatencyUs, OpGetItem): 2,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestRetrySleepCycleCount(t *testing.T) {
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, clientErr := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 		return &mockConn{rd: []byte{cbor.Array + 0}}, nil
 	}, nil)
@@ -299,9 +423,40 @@ func TestRetrySleepCycleCount(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error but got nil")
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedError:                  5,
+		daxConnectionsCreated:                      5,
+		daxConnectionsPendingAcquire:               10,
+		fmt.Sprintf(daxOpNameSuccess, OpGetItem):   5,
+		fmt.Sprintf(daxOpNameLatencyUs, OpGetItem): 5,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestRetryLastError(t *testing.T) {
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, clientErr := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, func(ctx context.Context, a, n string) (net.Conn, error) {
 		return &mockConn{rd: []byte{cbor.Array + 0}}, nil
 	}, nil)
@@ -381,6 +536,34 @@ func TestRetryLastError(t *testing.T) {
 	if callCount != expectedCalls {
 		t.Fatalf("Expected %d calls, got %d", expectedCalls, callCount)
 	}
+
+	assert.Len(t, tmp.meters, 1)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, daxMeterScope))
+	assert.NotNil(t, s)
+	if !ok || s == nil {
+		return
+	}
+
+	tm, ok := s.(*testMeter)
+	assert.True(t, ok)
+	if !ok {
+		return
+	}
+
+	keys := map[string]int{
+		daxConnectionsClosedError:                  3,
+		daxConnectionsCreated:                      3,
+		daxConnectionsPendingAcquire:               6,
+		fmt.Sprintf(daxOpNameSuccess, OpGetItem):   3,
+		fmt.Sprintf(daxOpNameLatencyUs, OpGetItem): 3,
+	}
+
+	for k, v := range keys {
+		i, ok := tm.i64s[k]
+		assert.True(t, ok, fmt.Sprintf(`expected key "%s" to exist in meters map`, k))
+		assert.Equal(t, v, len(i.data), k)
+	}
 }
 
 func TestSingleClient_customDialer(t *testing.T) {
@@ -388,12 +571,20 @@ func TestSingleClient_customDialer(t *testing.T) {
 	var dialContextFn dialContext = func(ctx context.Context, address string, network string) (net.Conn, error) {
 		return conn, nil
 	}
+	tmp := &testMeterProvider{}
+	unEncryptedConnConfig.meterProvider = tmp
+
 	client, err := newSingleClientWithOptions(":9121", unEncryptedConnConfig, "us-west-2", &testCredentialProvider{}, 1, dialContextFn, nil)
 	require.NoError(t, err)
 	defer client.Close()
 
 	c, _ := client.pool.dialContext(context.TODO(), "address", "network")
 	assert.Equal(t, conn, c)
+
+	assert.Len(t, tmp.meters, 0)
+	s, ok := tmp.meters[daxMeterScope]
+	assert.False(t, ok, fmt.Sprintf(`expected key "%s" to  not exist in meters map`, daxMeterScope))
+	assert.Nil(t, s)
 }
 
 type mockConn struct {
